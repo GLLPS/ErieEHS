@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { isConfigured } from './services/airtable';
+import { isConfigured, getClients } from './services/airtable';
+import { useAirtableQuery } from './hooks/useAirtable';
 import NotConfigured from './components/NotConfigured';
 import ActionRequired from './pages/ActionRequired';
 import WhatsNext from './pages/WhatsNext';
@@ -31,6 +32,8 @@ export default function App() {
     setSelectedClientId(clientId);
     setActiveTab('client');
   }, []);
+
+  const { data: clients } = useAirtableQuery(() => getClients(), []);
 
   if (!isConfigured()) {
     return <NotConfigured />;
@@ -95,6 +98,7 @@ export default function App() {
           <ClientSnapshot
             clientId={selectedClientId}
             onBack={() => setActiveTab('action')}
+            clients={clients.filter((c) => c.fields?.Status === 'Active')}
           />
         )}
         {activeTab === 'training' && (
