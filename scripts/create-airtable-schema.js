@@ -32,6 +32,7 @@ const path = require('path');
 
 const AIRTABLE_PAT = process.env.AIRTABLE_PAT;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || null;
+const AIRTABLE_WORKSPACE_ID = process.env.AIRTABLE_WORKSPACE_ID || null;
 const API_BASE = 'https://api.airtable.com/v0';
 const THROTTLE_MS = 200; // 200ms between requests (5 req/sec max)
 
@@ -545,51 +546,77 @@ async function getOrCreateBase() {
     return AIRTABLE_BASE_ID;
   }
 
-  // Fetch the list of bases to find the user's workspace ID
-  console.log('No AIRTABLE_BASE_ID set. Discovering workspace...');
-  const basesResponse = await airtableRequest('/meta/bases');
+  // We need a workspace ID to create a base — Airtable requires it.
+  let workspaceId = AIRTABLE_WORKSPACE_ID;
 
-  // The /meta/bases endpoint doesn't directly return workspace IDs,
-  // so we use the /meta/whoami endpoint to get user info, then list workspaces.
-  // Actually, we need to use GET /v0/meta/workspaces (if available) or
-  // create a base specifying workspaceId. Let's get it from the first base.
+  if (workspaceId) {
+    console.log(`Using workspace ID from env: ${workspaceId}`);
+  } else {
+    console.log('No AIRTABLE_BASE_ID set. Discovering workspace...');
 
-  // Alternative approach: list workspaces
-  let workspaceId;
-  try {
-    // Attempt to list workspaces (requires enterprise scopes on some plans)
-    const workspacesResponse = await airtableRequest('/meta/workspaces');
-    if (workspacesResponse.workspaces && workspacesResponse.workspaces.length > 0) {
-      workspaceId = workspacesResponse.workspaces[0].id;
-      console.log(`Found workspace: ${workspaceId}`);
+    // Method 1: Try GET /meta/workspaces (requires workspacesAndBases:read scope)
+    try {
+      const workspacesResponse = await airtableRequest('/meta/workspaces');
+      if (workspacesResponse.workspaces && workspacesResponse.workspaces.length > 0) {
+        workspaceId = workspacesResponse.workspaces[0].id;
+        console.log(`Found workspace via API: ${workspaceId}`);
+      }
+    } catch {
+      console.log('  /meta/workspaces endpoint not available for this token.');
     }
-  } catch {
-    // If workspaces endpoint is not available, try to get workspace from existing bases
-    console.log('Workspaces endpoint not available. Trying to extract from existing bases...');
-  }
 
-  // If we still don't have a workspace ID, try to get it from existing bases
-  if (!workspaceId) {
-    if (basesResponse.bases && basesResponse.bases.length > 0) {
-      // Get the base schema to find the workspace ID
-      const firstBase = basesResponse.bases[0];
-      // The base object may have a permissionLevel but not workspaceId directly.
-      // We need to get workspace info from the base metadata.
+    // Method 2: Check if any existing base has workspace info in its metadata
+    if (!workspaceId) {
       try {
-        const baseSchema = await airtableRequest(`/meta/bases/${firstBase.id}/tables`);
-        // The base metadata response doesn't include workspaceId either.
-        // Let's try to create the base without workspaceId if the API allows it,
-        // or use the whoami endpoint.
+        const basesResponse = await airtableRequest('/meta/bases');
+        if (basesResponse.bases && basesResponse.bases.length > 0) {
+          // Check if any base object carries a workspaceId
+          for (const base of basesResponse.bases) {
+            if (base.workspaceId) {
+              workspaceId = base.workspaceId;
+              console.log(`Found workspace via existing base "${base.name}": ${workspaceId}`);
+              break;
+            }
+          }
+        }
       } catch {
         // Ignore
       }
     }
   }
 
-  // Create the base
+  // If we still don't have a workspace ID, give clear instructions
+  if (!workspaceId) {
+    console.error('');
+    console.error('ERROR: Cannot create a new base without a workspace ID.');
+    console.error('');
+    console.error('You have two options:');
+    console.error('');
+    console.error('  Option A — Provide your workspace ID:');
+    console.error('    1. Go to https://airtable.com and open any workspace');
+    console.error('    2. The URL will look like: airtable.com/wsp***/...');
+    console.error('    3. Copy the "wsp..." ID');
+    console.error('    4. Add to your .env file: AIRTABLE_WORKSPACE_ID=wsp...');
+    console.error('');
+    console.error('  Option B — Create the base manually:');
+    console.error('    1. Go to https://airtable.com and click "+ Create" to make a new base');
+    console.error('    2. Name it "GLE EHS Management Hub"');
+    console.error('    3. Open it — the URL will be: airtable.com/app***/...');
+    console.error('    4. Copy the "app..." ID');
+    console.error('    5. Add to your .env file: AIRTABLE_BASE_ID=app...');
+    console.error('');
+    console.error('  Also ensure your PAT token has these scopes:');
+    console.error('    - data.records:read, data.records:write');
+    console.error('    - schema.bases:read, schema.bases:write');
+    console.error('');
+    process.exit(1);
+  }
+
+  // Create the base with the workspace ID
   console.log('Creating new base: "GLE EHS Management Hub"...');
   const createBody = {
     name: 'GLE EHS Management Hub',
+    workspaceId,
     tables: [
       {
         name: 'Placeholder',
@@ -600,10 +627,6 @@ async function getOrCreateBase() {
       },
     ],
   };
-
-  if (workspaceId) {
-    createBody.workspaceId = workspaceId;
-  }
 
   const createResponse = await airtableRequest('/meta/bases', 'POST', createBody);
   const baseId = createResponse.id;
